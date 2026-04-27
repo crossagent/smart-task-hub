@@ -13,7 +13,7 @@ if not os.getenv("DB_NAME"):
 print(f">>> [conftest] Using DB_NAME: {os.environ.get('DB_NAME')}")
 
 # Import from src ONLY after env vars are set
-from ..db import get_db_connection
+from db import get_db_connection
 
 @pytest.fixture(scope="session", autouse=True)
 def cleanup_stale_connections():
@@ -38,7 +38,9 @@ def cleanup_stale_connections():
 @pytest.fixture(scope="session", autouse=True)
 def init_test_db(cleanup_stale_connections):
     """Initialize the test database schema once per session."""
-    schema_path = os.path.join(os.getcwd(), "init_smart_task.sql")
+    # Updated path to look in tests/fixtures relative to this file
+    base_dir = os.path.dirname(__file__)
+    schema_path = os.path.join(base_dir, "fixtures", "init_smart_task.sql")
     if not os.path.exists(schema_path):
         print(f"\n>>> [conftest] Warning: {schema_path} not found.")
         return

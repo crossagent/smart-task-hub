@@ -1,22 +1,22 @@
 import pytest
 import uuid
+import json
 
 @pytest.fixture
 def test_data_ids():
-    """Generator for unique test IDs to ensure isolation."""
-    uid = uuid.uuid4().hex[:8].upper()
+    """Generates a fresh set of IDs for each test run."""
+    suffix = uuid.uuid4().hex[:8].upper()
     return {
-        "res": f"RES-T-{uid}",
-        "prj": f"PRJ-T-{uid}",
-        "act": f"ACT-T-{uid}",
-        "mod": f"MOD-T-{uid}",
-        "tsk": f"TSK-T-{uid}"
+        "res": f"RES-T-{suffix}",
+        "act": f"ACT-T-{suffix}",
+        "mod": f"MOD-T-{suffix}",
+        "tsk": f"TSK-T-{suffix}"
     }
 
 def test_full_database_crud_cycle(db_conn, test_data_ids):
     """
-    Standard pytest case for the 5-table CRUD cycle:
-    Resources -> Projects -> Activities -> Modules -> Tasks
+    Standard pytest case for the 4-table CRUD cycle (Strict SQL Alignment):
+    Resources -> Activities -> Modules -> Tasks
     """
     cur = db_conn.cursor()
     ids = test_data_ids
@@ -28,31 +28,26 @@ def test_full_database_crud_cycle(db_conn, test_data_ids):
             "INSERT INTO resources (id, name, org_role) VALUES (%s, %s, %s)",
             (ids["res"], "Pytest Agent", "Automation")
         )
-        # Project
+        # Activity (References Resource)
         cur.execute(
-            "INSERT INTO projects (id, name, initiator_res_id, memo_content) VALUES (%s, %s, %s, %s)",
-            (ids["prj"], "Pytest Project", ids["res"], "Integration testing with pytest")
+            "INSERT INTO activities (id, name, owner_res_id) VALUES (%s, %s, %s)",
+            (ids["act"], "Pytest Activity", ids["res"])
         )
-        # Activity
-        cur.execute(
-            "INSERT INTO activities (id, name, project_id, owner_res_id) VALUES (%s, %s, %s, %s)",
-            (ids["act"], "Pytest Activity", ids["prj"], ids["res"])
-        )
-        # Module
+        # Module (References Resource)
         cur.execute(
             "INSERT INTO modules (id, name, owner_res_id) VALUES (%s, %s, %s)",
             (ids["mod"], "Pytest Module", ids["res"])
         )
-        # Task
+        # Task (References Activity and Module)
         cur.execute(
-            "INSERT INTO tasks (id, module_id, project_id, activity_id, module_iteration_goal) VALUES (%s, %s, %s, %s, %s)",
-            (ids["tsk"], ids["mod"], ids["prj"], ids["act"], "Verify CRUD")
+            "INSERT INTO tasks (id, module_id, activity_id, module_iteration_goal) VALUES (%s, %s, %s, %s)",
+            (ids["tsk"], ids["mod"], ids["act"], "Verify CRUD")
         )
         db_conn.commit()
 
         # 2. READ & VERIFY
-        cur.execute("SELECT name FROM projects WHERE id = %s", (ids["prj"],))
-        assert cur.fetchone()[0] == "Pytest Project"
+        cur.execute("SELECT name FROM activities WHERE id = %s", (ids["act"],))
+        assert cur.fetchone()[0] == "Pytest Activity"
 
         cur.execute("SELECT status FROM tasks WHERE id = %s", (ids["tsk"],))
         assert cur.fetchone()[0] == "pending"
@@ -60,7 +55,7 @@ def test_full_database_crud_cycle(db_conn, test_data_ids):
         # 3. UPDATE
         cur.execute("UPDATE tasks SET status = 'done' WHERE id = %s", (ids["tsk"],))
         db_conn.commit()
-        
+
         cur.execute("SELECT status FROM tasks WHERE id = %s", (ids["tsk"],))
         assert cur.fetchone()[0] == "done"
 
@@ -68,7 +63,6 @@ def test_full_database_crud_cycle(db_conn, test_data_ids):
         cur.execute("DELETE FROM tasks WHERE id = %s", (ids["tsk"],))
         cur.execute("DELETE FROM modules WHERE id = %s", (ids["mod"],))
         cur.execute("DELETE FROM activities WHERE id = %s", (ids["act"],))
-        cur.execute("DELETE FROM projects WHERE id = %s", (ids["prj"],))
         cur.execute("DELETE FROM resources WHERE id = %s", (ids["res"],))
         db_conn.commit()
 

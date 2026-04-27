@@ -4,9 +4,9 @@ import respx
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from ..logic import run_to_stable as run_system_bus_cycle
-from ..server import agent_supervisor
-from ..db import execute_query, execute_mutation
+from logic import run_to_stable as run_system_bus_cycle
+from supervisor import agent_supervisor
+from db import execute_query, execute_mutation
 
 SLICE_SQL = Path(__file__).parent.parent / "fixtures" / "test_slice.sql"
 
@@ -39,7 +39,7 @@ def mock_agent_pool():
     agent_supervisor.pool = original_pool
 
 def run_step():
-    from ..logic import emit_event, EVENT_TASK_READY, EVENT_TASK_COMPLETED
+    from logic import emit_event, EVENT_TASK_READY, EVENT_TASK_COMPLETED
     
     # 0. Promote Root Pending Tasks
     execute_mutation("UPDATE tasks SET status = 'ready' WHERE status = 'pending' AND (depends_on IS NULL OR depends_on = '{}')")
