@@ -1,4 +1,0 @@
-db
-logic
-server
-supervisor

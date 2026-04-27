@@ -1,2 +1,0 @@
-[console_scripts]
-smart-task-hub = server:mcp.run

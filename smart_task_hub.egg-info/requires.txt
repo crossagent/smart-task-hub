@@ -1,9 +1,0 @@
-fastmcp
-psycopg2-binary
-python-dotenv
-httpx
-pyyaml
-pytest
-pytest-asyncio
-respx
-dateutils
