@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: smart-task-hub
+Version: 0.1.0
+Summary: Standalone MCP server for Smart Task Hub
+Requires-Dist: fastmcp
+Requires-Dist: psycopg2-binary
+Requires-Dist: python-dotenv
+Requires-Dist: httpx
+Requires-Dist: pyyaml
+Requires-Dist: pytest
+Requires-Dist: pytest-asyncio
+Requires-Dist: respx
+Requires-Dist: dateutils

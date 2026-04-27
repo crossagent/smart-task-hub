@@ -6,10 +6,19 @@ dependencies = [
     "fastmcp",
     "psycopg2-binary",
     "python-dotenv",
+    "httpx",
+    "pyyaml",
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+    "dateutils"
 ]
 
+[tool.setuptools]
+py-modules = ["db", "logic", "server", "supervisor"]
+
 [project.scripts]
-smart-task-hub = "smart_task_hub.server:mcp.run"
+smart-task-hub = "server:mcp.run"
 
 [build-system]
 requires = ["setuptools>=61.0"]

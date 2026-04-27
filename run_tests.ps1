@@ -2,9 +2,9 @@
 # Usage: .\run_tests.ps1
 
 $env:PYTHONPATH = "."
-$env:DB_NAME = "smart_task_test"
+$env:DB_NAME = "smart_task_hub"
 $env:DB_HOST = "localhost"
-$env:DB_PORT = "5433"
+$env:DB_PORT = "5432"
 $env:DB_USER = "smart_user"
 $env:DB_PASSWORD = "smart_pass"
 
