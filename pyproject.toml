@@ -1,0 +1,16 @@
+[project]
+name = "smart-task-hub"
+version = "0.1.0"
+description = "Standalone MCP server for Smart Task Hub"
+dependencies = [
+    "fastmcp",
+    "psycopg2-binary",
+    "python-dotenv",
+]
+
+[project.scripts]
+smart-task-hub = "smart_task_hub.server:mcp.run"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
