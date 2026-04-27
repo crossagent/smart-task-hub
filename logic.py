@@ -12,6 +12,8 @@ EVENT_TASK_COMPLETED = "task_completed"
 EVENT_TASK_READY = "task_ready"
 EVENT_TASK_ASSIGNED = "task_assigned"
 EVENT_TASK_FAILED = "task_failed"
+EVENT_PLANNER_REQUESTED = "planner_requested"
+EVENT_HUMAN_INSTRUCTION = "human_instruction"
 
 def emit_event(
     event_type: str,
@@ -42,6 +44,8 @@ def run_to_stable(connection=None):
     """Processes pending events until stable (Causality Flush)."""
     results = []
     while True:
+        # Check if we should stop (manual mode) - This would be handled by a higher-level loop
+        # For now, we process all pending.
         query = "SELECT * FROM events WHERE status = 'pending' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED"
         events = execute_query(query, connection=connection)
         if not events: break
@@ -71,6 +75,10 @@ def _handle_event(event, connection):
         return _handle_task_completed(event, connection)
     elif etype == EVENT_TASK_READY:
         return _handle_task_ready(event, connection)
+    elif etype == EVENT_PLANNER_REQUESTED:
+        return _handle_planner_requested(event, connection)
+    elif etype == EVENT_HUMAN_INSTRUCTION:
+        return _handle_human_instruction(event, connection)
     return f"Acknowledged {etype}."
 
 def _handle_task_completed(event, connection):
@@ -117,16 +125,13 @@ def _handle_task_ready(event, connection):
     task = task_data[0]
     owner_id = task['owner_res_id']
     
-    # Check if resource is available
     res_data = execute_query("SELECT id FROM resources WHERE id = %s AND is_available = True", (owner_id,), connection=connection)
     if not res_data: return f"Resource {owner_id} busy. Task {task_id} queued."
 
-    # Dispatch
     execute_mutation("UPDATE tasks SET status = 'in_progress' WHERE id = %s", (task_id,), connection=connection)
     execute_mutation("UPDATE resources SET is_available = False WHERE id = %s", (owner_id,), connection=connection)
     execute_mutation("INSERT INTO task_assignments (task_id, resource_id, status) VALUES (%s, %s, 'active')", (task_id, owner_id), connection=connection)
     
-    # Trigger Agent via Supervisor
     handle = agent_supervisor.pool.get(owner_id)
     if handle:
         url = getattr(handle, 'url', None) or (handle['url'] if isinstance(handle, dict) else None)
@@ -137,10 +142,40 @@ def _handle_task_ready(event, connection):
     emit_event(EVENT_TASK_ASSIGNED, task_id=task_id, resource_id=owner_id, activity_id=task['activity_id'], connection=connection)
     return f"Dispatched {task_id} to {owner_id}."
 
+def _handle_planner_requested(event, connection):
+    """Triggers the PM Agent (RES-PM-001) to review an activity."""
+    act_id = event['activity_id']
+    pm_id = "RES-PM-001"
+    handle = agent_supervisor.pool.get(pm_id)
+    if not handle: return f"PM Agent {pm_id} not in pool."
+    
+    url = getattr(handle, 'url', None) or handle.get('url')
+    aid = getattr(handle, 'agent_id', None) or handle.get('agent_id')
+    
+    instruction = f"Manual activation: Please review activity {act_id} and update blueprint."
+    _send_agent_request(url, aid, f"plan_{act_id}", instruction)
+    return f"Triggered PM for activity {act_id}."
+
+def _handle_human_instruction(event, connection):
+    """Triggers the PM Agent with a specific human instruction."""
+    act_id = event['activity_id']
+    payload = event['payload']
+    if isinstance(payload, str): payload = json.loads(payload)
+    
+    pm_id = "RES-PM-001"
+    handle = agent_supervisor.pool.get(pm_id)
+    if not handle: return f"PM Agent {pm_id} not in pool."
+    
+    url = getattr(handle, 'url', None) or handle.get('url')
+    aid = getattr(handle, 'agent_id', None) or handle.get('agent_id')
+    
+    instruction = f"Human Instruction: {payload.get('instruction')}"
+    _send_agent_request(url, aid, f"instruction_{act_id}_{payload.get('version')}", instruction)
+    return f"Passed human instruction to PM for activity {act_id}."
+
 def _send_agent_request(url: str, agent_id: str, session_id: str, text: str):
     """Sends async trigger to Agent API."""
     try:
-        # Note: In production this would be truly async. In tests we mock it.
         with httpx.Client(timeout=2.0) as client:
             client.post(f"{url}/run", json={"app_name": agent_id, "session_id": session_id, "new_message": {"parts": [{"text": text}]}})
     except Exception as e:
