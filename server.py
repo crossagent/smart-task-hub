@@ -50,6 +50,7 @@ def upsert_resource(
     name: str,
     org_role: str,
     resource_type: str = "agent",
+    agent_card_url: Optional[str] = None,
     is_available: bool = True,
     status: str = "Available",
     dingtalk_id: Optional[str] = None,
@@ -57,12 +58,13 @@ def upsert_resource(
 ) -> str:
     """Create or update a record in the resources (compute slots) table."""
     sql = """
-        INSERT INTO resources (id, name, org_role, resource_type, is_available, status, dingtalk_id, professional_skill)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO resources (id, name, org_role, resource_type, agent_card_url, is_available, status, dingtalk_id, professional_skill)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (id) DO UPDATE SET
             name = EXCLUDED.name,
             org_role = EXCLUDED.org_role,
             resource_type = EXCLUDED.resource_type,
+            agent_card_url = EXCLUDED.agent_card_url,
             is_available = EXCLUDED.is_available,
             status = EXCLUDED.status,
             dingtalk_id = EXCLUDED.dingtalk_id,
@@ -70,7 +72,7 @@ def upsert_resource(
             updated_at = CURRENT_TIMESTAMP
     """
     try:
-        db.execute_mutation(sql, (id, name, org_role, resource_type, is_available, status, dingtalk_id, professional_skill))
+        db.execute_mutation(sql, (id, name, org_role, resource_type, agent_card_url, is_available, status, dingtalk_id, professional_skill))
         return f"Successfully processed resource '{name}' (ID: {id})."
     except Exception as e:
         return f"Error: {str(e)}"
@@ -224,8 +226,8 @@ def submit_task_deliverable(task_id: str, status: str, execution_result: str, ar
             a_id = task_info[0]['activity_id'] if task_info else None
             
             logic.emit_event(logic.EVENT_TASK_COMPLETED, task_id=task_id, payload={"status": status, "result": execution_result}, activity_id=a_id, connection=conn)
-            steps = logic.run_to_stable(connection=conn)
-            return f"Task '{task_id}' submitted. Engine advanced {len(steps)} steps."
+            logic.run_to_stable(connection=conn)
+            return f"Task '{task_id}' submitted."
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -297,4 +299,6 @@ def delete_record(table: str, id: str) -> str:
         return f"Error: {str(e)}"
 
 if __name__ == "__main__":
+    from supervisor import agent_supervisor
+    agent_supervisor.bootstrap()
     mcp.run()

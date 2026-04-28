@@ -1,175 +1,118 @@
-from __future__ import annotations
-
-import os
-import subprocess
-import threading
 import logging
-import yaml
-import time
-import httpx
-from dotenv import load_dotenv
-from typing import Optional, Dict, List, Any, Callable
-from db import execute_mutation
+import threading
+import asyncio
+import json
+from typing import Dict, Optional
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+import db
 
-logger = logging.getLogger("smart_task.resource_management.supervisor")
+logger = logging.getLogger("smart_task.supervisor")
 
-class PersistentAgentHandle:
-    """
-    Represents a long-running Agent API server.
-    """
-    def __init__(self, agent_id: str, resource_id: str, dir: str, port: int, workspace: str, host: str = "localhost"):
-        self.agent_id = agent_id
+class A2AAgentHandle:
+    """Encapsulates a remote A2A agent proxy."""
+    def __init__(self, resource_id: str, agent_card_url: str):
         self.resource_id = resource_id
-        self.dir = dir
-        self.port = port
-        self.workspace = workspace
-        self.host = host
-        self.process: Optional[subprocess.Popen] = None
-        self.url = f"http://{host}:{port}"
-
-    def is_alive(self) -> bool:
-        """Checks if the agent is responsive."""
-        if self.host == "localhost":
-            return self.process is not None and self.process.poll() is None
-        
-        # Remote health check
-        try:
-            with httpx.Client(timeout=2.0) as client:
-                response = client.get(f"{self.url}/list-apps")
-                return response.status_code == 200
-        except Exception:
-            return False
+        self.agent_card_url = agent_card_url
+        self.proxy = RemoteA2aAgent(agent_card_url)
+        logger.info(f"Initialized A2A Handle for {resource_id} at {agent_card_url}")
 
 class AgentSupervisor:
     """
-    Manages a pool of persistent ADK api_server processes.
+    Manages A2A agent proxies in a background thread to bridge 
+    Sync Hub logic with Async A2A communication.
     """
-    def __init__(self, config_path: str = "config.yaml"):
-        self.config_path = config_path
-        self.pool: Dict[str, PersistentAgentHandle] = {} # resource_id -> Handle
-        self.db_url: str = ""
-        self.db_config: Dict[str, Any] = {}
-        self._watchdog_thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
-
-    def load_config(self):
-        """Loads agent pool configuration from config.yaml."""
-        if not os.path.exists(self.config_path):
-            logger.error(f"Config file not found: {self.config_path}")
-            return
-
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-            self.db_url = config.get("db_url", "")
-            self.db_config = config.get("db_config", {})
-            
-            # Load .env for API keys
-            load_dotenv()
-            for agent_cfg in config.get("agents_pool", []):
-                agent_id = agent_cfg["id"]
-                # Allow environment overrides for Docker networking
-                # e.g. AGENT_activity_manager_HOST=activity_manager
-                env_host = os.getenv(f"AGENT_{agent_id.upper()}_HOST")
-                env_port = os.getenv(f"AGENT_{agent_id.upper()}_PORT")
-                
-                handle = PersistentAgentHandle(
-                    agent_id=agent_id,
-                    resource_id=agent_cfg["resource_id"],
-                    dir=agent_cfg["dir"],
-                    port=int(env_port) if env_port else agent_cfg["port"],
-                    workspace=agent_cfg.get("default_workspace", ""),
-                    host=env_host if env_host else agent_cfg.get("host", "localhost")
-                )
-                self.pool[handle.resource_id] = handle
+    def __init__(self):
+        self.pool: Dict[str, A2AAgentHandle] = {}
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
 
     def bootstrap(self):
-        """Starts all persistent agents in the pool."""
-        self.load_config()
-        logger.info(f"Bootstrapping Agent Pool with {len(self.pool)} agents...")
-        
-        for handle in self.pool.values():
-            self._start_agent_process(handle)
-
-        # Start watchdog thread
-        thread = threading.Thread(target=self._watchdog_loop, daemon=True)
-        self._watchdog_thread = thread
-        self._watchdog_thread.start()
-
-    def _start_agent_process(self, handle: PersistentAgentHandle):
-        """Starts the physical agent process if it's local."""
-        if handle.host != "localhost":
-            logger.info(f"Agent {handle.agent_id} is remote ({handle.url}). Skipping subprocess startup.")
+        """Initializes the background event loop and loads agent pool."""
+        if self._thread:
             return
 
-        logger.info(f"Starting Local Agent {handle.agent_id} on port {handle.port}...")
-        
-        env = os.environ.copy()
-        if self.db_url:
-            env["SESSION_SERVICE_URI"] = self.db_url
-        
-        # Inject individual DB parameters for agent tools
-        if self.db_config:
-            env["DB_HOST"] = str(self.db_config.get("host", "localhost"))
-            env["DB_PORT"] = str(self.db_config.get("port", "5432"))
-            env["DB_USER"] = str(self.db_config.get("user", "smart_user"))
-            env["DB_PASSWORD"] = str(self.db_config.get("password", "smart_pass"))
-            env["DB_NAME"] = str(self.db_config.get("dbname", "smart_task_hub"))
+        # 1. Start Background Thread for AsyncIO
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run_event_loop, daemon=True)
+        self._thread.start()
+        logger.info("AgentSupervisor: Background event loop started.")
 
-        if handle.workspace:
-            env["SMART_WORKSPACE_PATH"] = handle.workspace
+        # 2. Initial load of agents from DB
+        self.refresh_pool()
 
-        # uv run adk api_server <dir> --port <port>
-        cmd = ["uv", "run", "adk", "api_server", handle.dir, "--port", str(handle.port)]
-        
+    def _run_event_loop(self):
+        """Entry point for the background thread."""
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def refresh_pool(self):
+        """Sync interface to refresh agent proxies from database."""
         try:
-            process = subprocess.Popen(
-                cmd,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
-            )
-            handle.process = process
-            
-            # Start log reader thread
-            threading.Thread(target=self._log_reader, args=(handle,), daemon=True).start()
-            
+            # Note: db.execute_query is sync
+            rows = db.execute_query("SELECT id, agent_card_url FROM resources WHERE resource_type = 'agent' AND agent_card_url IS NOT NULL")
+            new_pool = {}
+            for row in (rows or []):
+                rid = row['id']
+                url = row['agent_card_url']
+                # Reuse existing handle if URL hasn't changed to preserve state/connections
+                if rid in self.pool and self.pool[rid].agent_card_url == url:
+                    new_pool[rid] = self.pool[rid]
+                else:
+                    new_pool[rid] = A2AAgentHandle(rid, url)
+            self.pool = new_pool
+            logger.info(f"Agent pool refreshed. {len(self.pool)} agents active.")
         except Exception as e:
-            logger.error(f"Failed to start agent {handle.agent_id}: {e}")
+            logger.error(f"Failed to refresh agent pool: {e}")
 
-    def _log_reader(self, handle: PersistentAgentHandle):
-        """Reads and logs output from an agent process."""
-        prefix = f"[{handle.agent_id}:{handle.port}]"
-        if handle.process and handle.process.stdout:
-            for line in handle.process.stdout:
-                logger.debug(f"{prefix} {line.strip()}")
+    def get_agent(self, resource_id: str) -> Optional[A2AAgentHandle]:
+        return self.pool.get(resource_id)
 
-    def _watchdog_loop(self):
-        """Continuously monitors health and restarts failed agents."""
-        while not self._stop_event.is_set():
-            self._reconcile_pool()
-            time.sleep(10)
+    def trigger_agent(self, resource_id: str, task_id: str, goal: str):
+        """
+        SYNC ENTRY POINT: Triggers an agent via A2A in the background.
+        This is what the Hub logic calls.
+        """
+        if not self._loop:
+            logger.error("Supervisor loop not started. Call bootstrap() first.")
+            return
 
-    def _reconcile_pool(self):
-        """Internal logic to check health and trigger restarts."""
-        for handle in self.pool.values():
-            if not handle.is_alive():
-                logger.warning(f"Agent {handle.agent_id} (port {handle.port}) died. Restarting...")
-                self._start_agent_process(handle)
+        handle = self.get_agent(resource_id)
+        if not handle:
+            logger.error(f"No agent found for resource: {resource_id}")
+            return
 
-    def get_agent_url(self, resource_id: str) -> Optional[str]:
-        """Returns the HTTP endpoint for the given resource."""
-        handle = self.pool.get(resource_id)
-        return handle.url if handle else None
+        # Schedule the async trigger in the background thread
+        asyncio.run_coroutine_threadsafe(
+            self._async_trigger(handle, task_id, goal), 
+            self._loop
+        )
+        logger.info(f"Trigger signal sent to background for {resource_id} (Task: {task_id})")
 
-    def stop(self):
-        """Stops the pool and all processes."""
-        self._stop_event.set()
-        for handle in self.pool.values():
-            if handle.process:
-                handle.process.terminate()
-        logger.info("Agent Pool stopped.")
+    async def _async_trigger(self, handle: A2AAgentHandle, task_id: str, goal: str):
+        """Internal async method to maintain the A2A channel and stream logs."""
+        try:
+            logger.info(f"A2A Channel Opening: {handle.resource_id} for Task {task_id}")
+            
+            # Simple text message activation
+            message = {"parts": [{"text": f"EXECUTE_TASK: {task_id}\nGOAL: {goal}"}]}
+            
+            async for event in handle.proxy.run_async(
+                session_id=task_id,
+                user_id="hub_system",
+                new_message=message
+            ):
+                # Here is where we "maintain the channel"
+                # We can pipe these events to task_logs table later
+                if event.get("event_type") == "text":
+                    text = event.get("text", "")
+                    if text.strip():
+                        # Sync DB call inside async context is okay if it's quick, 
+                        # or we could use another background task
+                        logger.debug(f"[{handle.resource_id}] {text[:50]}...")
+                
+            logger.info(f"A2A Channel Closed gracefully for {handle.resource_id}")
+        except Exception as e:
+            logger.error(f"A2A Channel Error for {handle.resource_id}: {e}")
+            # Potential for auto-retry logic here
 
-# Singleton instance
 agent_supervisor = AgentSupervisor()

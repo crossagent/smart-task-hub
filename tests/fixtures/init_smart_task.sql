@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS resources (
     name VARCHAR(100) NOT NULL,
     resource_type VARCHAR(50) DEFAULT 'human', -- human | agent
     org_role VARCHAR(255) NOT NULL,            -- e.g., Senior Architect, Coder
+    agent_card_url VARCHAR(255),               -- A2A Discovery URL
     is_available BOOLEAN DEFAULT TRUE,
     status VARCHAR(50) DEFAULT 'Available',    -- Available | Busy | Away
     dingtalk_id VARCHAR(100),
@@ -173,8 +174,16 @@ DROP TRIGGER IF EXISTS update_blueprint_plans_modtime ON blueprint_plans;
 CREATE TRIGGER update_blueprint_plans_modtime BEFORE UPDATE ON blueprint_plans FOR EACH ROW EXECUTE FUNCTION update_modified_column();
 
 -- DEFAULT DATA
-INSERT INTO resources (id, name, org_role, is_available, resource_type) 
-VALUES ('RES-ARCHITECT-001', 'System Architect', 'Control Plane', TRUE, 'agent') ON CONFLICT (id) DO NOTHING;
+INSERT INTO resources (id, name, org_role, is_available, resource_type, agent_card_url) 
+VALUES 
+('RES-PM-001', 'Project Manager', 'Control Plane', TRUE, 'agent', 'http://hub_pm:9010/.well-known/agent-card.json'),
+('RES-PLANNER-001', 'Task Planner', 'Strategic Layer', TRUE, 'agent', 'http://task_planner:9011/.well-known/agent-card.json'),
+('RES-CODER-001', 'Coder Expert', 'Execution Layer', TRUE, 'agent', 'http://coder_expert:9012/.well-known/agent-card.json'),
+('RES-TRADER-001', 'Trader Expert', 'Execution Layer', TRUE, 'agent', 'http://trader_expert:9013/.well-known/agent-card.json'),
+('RES-RESEARCH-001', 'Research Expert', 'Strategic Layer', TRUE, 'agent', 'http://research_expert:9014/.well-known/agent-card.json'),
+('RES-RISK-001', 'Risk Manager', 'Strategic Layer', TRUE, 'agent', 'http://risk_expert:9015/.well-known/agent-card.json'),
+('RES-DATA-001', 'Data Engineer', 'Execution Layer', TRUE, 'agent', 'http://data_expert:9016/.well-known/agent-card.json')
+ON CONFLICT (id) DO UPDATE SET agent_card_url = EXCLUDED.agent_card_url;
 
 INSERT INTO system_state (key, value) VALUES ('run_mode', '"auto"') ON CONFLICT (key) DO NOTHING;
 INSERT INTO system_state (key, value) VALUES ('step_count', '0') ON CONFLICT (key) DO NOTHING;
