@@ -11,7 +11,8 @@ dependencies = [
     "pytest",
     "pytest-asyncio",
     "respx",
-    "dateutils"
+    "dateutils",
+    "google-adk[a2a]>=1.25.0"
 ]
 
 [tool.setuptools]
