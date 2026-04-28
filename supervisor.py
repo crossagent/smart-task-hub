@@ -11,9 +11,18 @@ logger = logging.getLogger("smart_task.supervisor")
 class A2AAgentHandle:
     """Encapsulates a remote A2A agent proxy."""
     def __init__(self, resource_id: str, agent_card_url: str):
+        from google.adk.runners import Runner
+        from google.adk.sessions.in_memory_session_service import InMemorySessionService
         self.resource_id = resource_id
         self.agent_card_url = agent_card_url
-        self.proxy = RemoteA2aAgent(agent_card_url)
+        # Agent names must be valid Python identifiers (no hyphens)
+        safe_name = resource_id.replace("-", "_")
+        self.proxy = RemoteA2aAgent(safe_name, agent_card_url)
+        self.runner = Runner(
+            app_name="smart_task_hub",
+            agent=self.proxy,
+            session_service=InMemorySessionService()
+        )
         logger.info(f"Initialized A2A Handle for {resource_id} at {agent_card_url}")
 
 class AgentSupervisor:
@@ -93,21 +102,23 @@ class AgentSupervisor:
         try:
             logger.info(f"A2A Channel Opening: {handle.resource_id} for Task {task_id}")
             
-            # Simple text message activation
-            message = {"parts": [{"text": f"EXECUTE_TASK: {task_id}\nGOAL: {goal}"}]}
+            # Use proper ADK Content structure
+            from google.genai import types as genai_types
+            message = genai_types.Content(
+                role="user",
+                parts=[genai_types.Part(text=f"EXECUTE_TASK: {task_id}\nGOAL: {goal}")]
+            )
             
-            async for event in handle.proxy.run_async(
+            async for event in handle.runner.run_async(
                 session_id=task_id,
                 user_id="hub_system",
                 new_message=message
             ):
                 # Here is where we "maintain the channel"
                 # We can pipe these events to task_logs table later
-                if event.get("event_type") == "text":
-                    text = event.get("text", "")
+                if event.content and event.content.parts:
+                    text = "".join([p.text for p in event.content.parts if p.text])
                     if text.strip():
-                        # Sync DB call inside async context is okay if it's quick, 
-                        # or we could use another background task
                         logger.debug(f"[{handle.resource_id}] {text[:50]}...")
                 
             logger.info(f"A2A Channel Closed gracefully for {handle.resource_id}")

@@ -299,6 +299,19 @@ def delete_record(table: str, id: str) -> str:
         return f"Error: {str(e)}"
 
 if __name__ == "__main__":
+    import os
     from supervisor import agent_supervisor
     agent_supervisor.bootstrap()
-    mcp.run()
+    
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    port = int(os.getenv("PORT", "45666"))
+    
+    if transport == "streamable-http":
+        logger.info(f"Starting MCP server with streamable-http transport on port {port}")
+        mcp.run(transport="streamable-http", port=port)
+    elif transport == "sse":
+        logger.info(f"Starting MCP server with SSE transport on port {port}")
+        mcp.run(transport="sse", port=port)
+    else:
+        logger.info("Starting MCP server with stdio transport")
+        mcp.run(transport="stdio")
