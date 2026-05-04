@@ -71,6 +71,17 @@ class TestDataPlane:
         run_step()
         assert task_status('TSK-PEND-002') == 'in_progress'
 
+    def test_pending_task_waits_for_all_dependencies(self, mock_agent_pool):
+        execute_mutation(
+            """
+            UPDATE tasks
+            SET depends_on = ARRAY['TSK-DONE-001', 'TSK-RUN-001']::varchar[]
+            WHERE id = 'TSK-AWAIT-001'
+            """
+        )
+        run_system_bus_cycle()
+        assert task_status('TSK-AWAIT-001') == 'pending'
+
     def test_ready_task_dispatched_to_worker(self, mock_agent_pool):
         run_step()
         assert task_status('TSK-READY-001') == 'in_progress'

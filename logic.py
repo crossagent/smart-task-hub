@@ -11,6 +11,7 @@ EVENT_TASK_ASSIGNED = "task_assigned"
 EVENT_TASK_COMPLETED = "task_completed"
 EVENT_TASK_FAILED = "task_failed"
 EVENT_HUMAN_INTERRUPT = "human_interrupt"
+MAX_STABLE_STEPS = 100
 
 def emit_event(
     event_type: str,
@@ -42,140 +43,155 @@ def emit_event(
     )
     logger.info(f"Event emitted: {event_type} (Task: {task_id})")
 
-def run_to_stable(connection=None):
-    """
-    Main Sync Loop: Processes all pending events until the system reaches a stable state.
-    Now completely synchronous.
-    """
-    processed_count = 0
-    while True:
-        # Get next pending event using FOR UPDATE SKIP LOCKED for basic concurrency safety
-        event = db.execute_query("""
-            SELECT id, event_type, task_id, payload 
-            FROM events 
-            WHERE status = 'pending' 
-            ORDER BY created_at ASC 
-            LIMIT 1 
-            FOR UPDATE SKIP LOCKED
-        """, connection=connection)
-        
-        if not event:
+def step(connection=None):
+    """Advance task scheduling from the current database state."""
+    result = {
+        "released": 0,
+        "promoted": 0,
+        "dispatched": 0,
+    }
+    result["released"] = _release_terminal_assignments(connection=connection)
+    result["promoted"] = _promote_unblocked_tasks(connection=connection)
+    result["dispatched"] = _dispatch_ready_tasks(connection=connection)
+    result["changed"] = sum(result.values())
+    logger.info("Scheduler step result: %s", result)
+    return result
+
+def run_to_stable(connection=None, max_steps=MAX_STABLE_STEPS):
+    """Run scheduler steps until no database state can be advanced."""
+    total = {
+        "released": 0,
+        "promoted": 0,
+        "dispatched": 0,
+        "steps": 0,
+        "stable": False,
+    }
+    for _ in range(max_steps):
+        current = step(connection=connection)
+        total["steps"] += 1
+        total["released"] += current["released"]
+        total["promoted"] += current["promoted"]
+        total["dispatched"] += current["dispatched"]
+        if current["changed"] == 0:
+            total["stable"] = True
             break
-            
-        event = event[0]
-        event_id = event['id']
-        etype = event['event_type']
-        tid = event['task_id']
-        payload = event['payload']
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        elif payload is None:
-            payload = {}
-        
-        try:
-            logger.info(f"Processing Event {event_id}: {etype}")
-            
-            if etype == EVENT_TASK_READY:
-                _handle_task_ready(tid, connection=connection)
-            elif etype == EVENT_TASK_COMPLETED:
-                _handle_task_completed(tid, connection=connection)
-            elif etype == EVENT_HUMAN_INTERRUPT:
-                _handle_human_interrupt(payload, connection=connection)
-                
-            # Mark as processed
-            db.execute_mutation(
-                "UPDATE events SET status = 'processed' WHERE id = %s",
-                (event_id,),
-                connection=connection,
-            )
-            processed_count += 1
-            
-        except Exception as e:
-            logger.error(f"Error processing event {event_id}: {e}")
-            db.execute_mutation(
-                "UPDATE events SET status = 'failed' WHERE id = %s",
-                (event_id,),
-                connection=connection,
-            )
+    return total
 
-    return processed_count
-
-def _handle_task_ready(task_id: str, connection=None):
-    """Sync: Logic for when a task is ready to be executed."""
-    task = db.execute_query(
-        "SELECT module_id, module_iteration_goal FROM tasks WHERE id = %s",
-        (task_id,),
+def _release_terminal_assignments(connection=None):
+    """Release resources for tasks already marked terminal in the database."""
+    assignments = db.execute_query(
+        """
+        SELECT ta.task_id, ta.resource_id, t.status
+        FROM task_assignments ta
+        JOIN tasks t ON t.id = ta.task_id
+        WHERE ta.status = 'active'
+          AND t.status IN ('done', 'failed', 'blocked')
+        ORDER BY ta.assigned_at ASC
+        """,
         connection=connection,
     )
-    if not task: return
-    task = task[0]
-    
-    module = db.execute_query(
-        "SELECT owner_res_id FROM modules WHERE id = %s",
-        (task['module_id'],),
-        connection=connection,
-    )
-    if not module: return
-    owner_id = module[0]['owner_res_id']
-    
-    # 1. Update task status and record assignment
-    db.execute_mutation(
-        "UPDATE tasks SET status = 'in_progress' WHERE id = %s",
-        (task_id,),
-        connection=connection,
-    )
-    db.execute_mutation(
-        "UPDATE resources SET is_available = FALSE WHERE id = %s",
-        (owner_id,),
-        connection=connection,
-    )
-    db.execute_mutation(
-        "INSERT INTO task_assignments (task_id, resource_id, status) VALUES (%s, %s, 'active')",
-        (task_id, owner_id),
-        connection=connection,
-    )
-    
-    emit_event(
-        EVENT_TASK_ASSIGNED,
-        task_id=task_id,
-        resource_id=owner_id,
-        payload={"resource_id": owner_id},
-        connection=connection,
-    )
-    
-    # 2. Trigger A2A Agent (Sync Bridge)
-    _send_agent_request(owner_id, task_id, task['module_iteration_goal'])
-
-def _handle_task_completed(task_id: str, connection=None):
-    """Sync: Cleanup logic when a task finishes."""
-    assignment = db.execute_query(
-        "SELECT resource_id FROM task_assignments WHERE task_id = %s AND status = 'active'",
-        (task_id,),
-        connection=connection,
-    )
-    if assignment:
-        res_id = assignment[0]['resource_id']
+    released_count = 0
+    for assignment in assignments or []:
+        task_id = assignment["task_id"]
+        resource_id = assignment["resource_id"]
+        terminal_status = assignment["status"]
+        assignment_status = (
+            "completed" if terminal_status == "done" else terminal_status
+        )
         db.execute_mutation(
-            "UPDATE resources SET is_available = TRUE WHERE id = %s",
-            (res_id,),
+            """
+            UPDATE task_assignments
+            SET status = %s, completed_at = CURRENT_TIMESTAMP
+            WHERE task_id = %s AND resource_id = %s AND status = 'active'
+            """,
+            (assignment_status, task_id, resource_id),
             connection=connection,
         )
         db.execute_mutation(
-            "UPDATE task_assignments SET status = 'completed' WHERE task_id = %s",
+            "UPDATE resources SET is_available = TRUE WHERE id = %s",
+            (resource_id,),
+            connection=connection,
+        )
+        released_count += 1
+    return released_count
+
+def _promote_unblocked_tasks(connection=None):
+    """Promote pending tasks when all declared dependencies are done."""
+    return db.execute_mutation(
+        """
+        UPDATE tasks t
+        SET status = 'ready'
+        WHERE t.status = 'pending'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM unnest(COALESCE(t.depends_on, '{}')) dep_id
+              LEFT JOIN tasks dep ON dep.id = dep_id
+              WHERE dep.id IS NULL OR dep.status <> 'done'
+          )
+        """,
+        connection=connection,
+    )
+
+def _dispatch_ready_tasks(connection=None):
+    """Dispatch ready tasks to their module owner when that resource is free."""
+    ready_tasks = db.execute_query(
+        """
+        SELECT t.id, t.module_iteration_goal, m.owner_res_id
+        FROM tasks t
+        JOIN modules m ON m.id = t.module_id
+        JOIN resources r ON r.id = m.owner_res_id
+        WHERE t.status = 'ready'
+          AND r.is_available = TRUE
+        ORDER BY t.created_at ASC
+        """,
+        connection=connection,
+    )
+    dispatched_count = 0
+    for task in ready_tasks or []:
+        task_id = task["id"]
+        resource_id = task["owner_res_id"]
+        locked = db.execute_query(
+            """
+            UPDATE resources
+            SET is_available = FALSE
+            WHERE id = %s AND is_available = TRUE
+            RETURNING id
+            """,
+            (resource_id,),
+            connection=connection,
+        )
+        if not locked:
+            continue
+        updated = db.execute_mutation(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = %s AND status = 'ready'",
             (task_id,),
             connection=connection,
         )
-    
-    # Check for dependent tasks
-    dependents = db.execute_query(
-        "SELECT id FROM tasks WHERE depends_on @> ARRAY[%s]::varchar[] AND status = 'pending'",
-        (task_id,),
-        connection=connection,
-    )
-    for dep in (dependents or []):
-        # Check if all dependencies are satisfied
-        # Simplified: if this one was the last one needed
-        emit_event(EVENT_TASK_READY, task_id=dep['id'], connection=connection)
+        if not updated:
+            db.execute_mutation(
+                "UPDATE resources SET is_available = TRUE WHERE id = %s",
+                (resource_id,),
+                connection=connection,
+            )
+            continue
+        db.execute_mutation(
+            """
+            INSERT INTO task_assignments (task_id, resource_id, status)
+            VALUES (%s, %s, 'active')
+            """,
+            (task_id, resource_id),
+            connection=connection,
+        )
+        emit_event(
+            EVENT_TASK_ASSIGNED,
+            task_id=task_id,
+            resource_id=resource_id,
+            payload={"resource_id": resource_id},
+            connection=connection,
+        )
+        _send_agent_request(resource_id, task_id, task["module_iteration_goal"])
+        dispatched_count += 1
+    return dispatched_count
 
 def _handle_human_interrupt(payload: dict, connection=None):
     """Sync: Handle manual instructions from user via Dashboard."""

@@ -45,6 +45,29 @@ def get_database_schema() -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
+def step() -> str:
+    """Advance the scheduler once from the current database state."""
+    try:
+        with db.db_transaction() as conn:
+            result = logic.step(connection=conn)
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool()
+def run_to_stable(max_steps: int = 100) -> str:
+    """Run scheduler steps until the database state has no more progress."""
+    try:
+        with db.db_transaction() as conn:
+            result = logic.run_to_stable(
+                connection=conn,
+                max_steps=max_steps,
+            )
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@mcp.tool()
 def upsert_resource(
     id: str,
     name: str,
