@@ -23,15 +23,15 @@ INSERT INTO modules (id, name, owner_res_id, local_path, repo_url, entity_type) 
 ('MOD-UI',        'Frontend UI',   'RES-CODER-003',     '/app/src/ui',    'git://hub.local/ui',      'Code'),
 ('MOD-DOCS',      'System Docs',   'RES-ARCHITECT-001', '/app/docs',      'git://hub.local/docs',    'Document');
 
--- 4. ACTIVITIES
-INSERT INTO activities (id, name, owner_res_id, status) VALUES
-('ACT-LIVE-001',  'Production Migration', 'RES-ARCHITECT-001', 'Active'),
-('ACT-STALL-001', 'Integration Testing',  'RES-ARCHITECT-001', 'Active');
+-- 4. MILESTONES
+INSERT INTO milestones (id, name, target_date, status) VALUES
+('MS-LIVE-1', 'Auth Service Ready', '2026-05-01', 'Pending'),
+('MS-LIVE-2', 'UI Redesign Complete', '2026-05-15', 'Pending');
 
--- 5. MILESTONES
-INSERT INTO milestones (id, activity_id, name, target_date, status) VALUES
-('MS-LIVE-1', 'ACT-LIVE-001', 'Auth Service Ready', '2026-05-01', 'Pending'),
-('MS-LIVE-2', 'ACT-LIVE-001', 'UI Redesign Complete', '2026-05-15', 'Pending');
+-- 5. ACTIVITIES
+INSERT INTO activities (id, milestone_id, name, owner_res_id, status) VALUES
+('ACT-LIVE-001',  'MS-LIVE-1', 'Production Migration', 'RES-ARCHITECT-001', 'Active'),
+('ACT-STALL-001', NULL,        'Integration Testing',  'RES-ARCHITECT-001', 'Active');
 
 -- 6. TASKS
 INSERT INTO tasks (id, activity_id, milestone_id, module_id, module_iteration_goal, status) VALUES

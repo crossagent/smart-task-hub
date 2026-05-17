@@ -39,10 +39,24 @@ CREATE TABLE IF NOT EXISTS resources (
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
--- 3. ACTIVITIES (Execution Strategies)
--- Represents the "How" (The roadmap for engineering).
+-- 3. MILESTONES (Temporal Governance Goals)
+-- Represents the largest target on the time axis.
+CREATE TABLE IF NOT EXISTS milestones (
+    id VARCHAR(50) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    target_date DATE,
+    status VARCHAR(50) DEFAULT 'Pending',      -- Pending | Achieved | Missed
+    reached_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 4. ACTIVITIES (Execution Strategies)
+-- Represents the "How" under a milestone.
 CREATE TABLE IF NOT EXISTS activities (
     id VARCHAR(50) PRIMARY KEY,
+    milestone_id VARCHAR(50) REFERENCES milestones(id) ON DELETE SET NULL,
     name VARCHAR(255) NOT NULL,
     owner_res_id VARCHAR(50) NOT NULL REFERENCES resources(id),
     status VARCHAR(50) DEFAULT 'Active',
@@ -52,20 +66,6 @@ CREATE TABLE IF NOT EXISTS activities (
     artifact TEXT,                             -- Final deliverable for the activity
     user_instruction TEXT,
     instruction_version INTEGER DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
-
--- 4. MILESTONES (Key Timeline Nodes)
--- Represents major goals within an activity.
-CREATE TABLE IF NOT EXISTS milestones (
-    id VARCHAR(50) PRIMARY KEY,
-    activity_id VARCHAR(50) NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
-    description TEXT,
-    target_date DATE,
-    status VARCHAR(50) DEFAULT 'Pending',      -- Pending | Achieved | Missed
-    reached_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
